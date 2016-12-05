@@ -4,7 +4,7 @@ import org.lastools.*;
 import java.util.Arrays;
 import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
-public class pullautin {
+public class Kartantekia {
 	public static void main(String[] args) throws Exception {
 
 		
