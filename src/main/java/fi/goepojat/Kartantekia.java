@@ -1,19 +1,24 @@
 package fi.goepojat;
 
 import org.lastools.*;
+
+import java.io.File;
 import java.util.Arrays;
-import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
 public class Kartantekia {
 	public static void main(String[] args) throws Exception {
 
+		String input_filename = args[0];
+		boolean isargfile = new File(input_filename).isFile();
 		
-		
-		
+		if (!isargfile) {
+			System.out.println("USAGE: kartantekija <input file>");
+			System.exit(1);
+		}
 		
 		LASlibJNI.initialize();
 
-		try (LASReader reader = new LASReader("K:\\koodi\\pullautin3\\U4234A2.laz")) {
+		try (LASReader reader = new LASReader(input_filename)) {
 			int count = 0;
 			long st = System.currentTimeMillis();
 
