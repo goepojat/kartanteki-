@@ -9,7 +9,7 @@ import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 public class LaserPointStore {
 	// ObjectBigArrayBigList<LaserPoint> points = new ObjectBigArrayBigList<>();
 
-	private Long2ObjectAVLTreeMap<ObjectBigArrayBigList> bins;
+	private Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> bins;
 	private double[] bbox;
 	private float binsize;
 	private long ncols;
@@ -97,7 +97,7 @@ public class LaserPointStore {
 
 	public long getNumPoints() {
 		long psum = 0;
-		for (ObjectBigArrayBigList lps : bins.values()) {
+		for (ObjectBigArrayBigList<LaserPoint> lps : bins.values()) {
 			psum += lps.size64();
 		}
 
@@ -107,4 +107,8 @@ public class LaserPointStore {
 	public int getNumBins() {
 		return bins.size();
 	}
+	
+    public Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> getBins() {
+        return bins;
+    }
 }
