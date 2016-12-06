@@ -8,8 +8,11 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.DoubleSummaryStatistics;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -18,6 +21,10 @@ import org.lastools.LASReader;
 import org.lastools.LASlibJNI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
+import it.unimi.dsi.fastutil.objects.ObjectAVLTreeSet;
+import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
 public class Kartantekia {
     
@@ -100,9 +107,14 @@ public class Kartantekia {
             
 //            Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> asd = ;
             
+            Long2ObjectAVLTreeMap<RasterPoint> rasterPoints = new Long2ObjectAVLTreeMap<>();
             
-            pointStore.getBins().values().forEach(points -> {
-                binProcessor.submit(() -> {
+            ObjectAVLTreeSet<Future<?>> futures = new ObjectAVLTreeSet<>(); 
+            
+            pointStore.getBins().entrySet().forEach(entry -> {
+                Long bin = entry.getKey();
+                ObjectBigArrayBigList<LaserPoint> points = entry.getValue();
+                Future<?> future = binProcessor.submit(() -> {
                     
                     // Jyrkänteen laskenta jotenkin näin:
                     // filtteröidään maapisteet
@@ -114,7 +126,7 @@ public class Kartantekia {
                         else if (lp1.getZ() < lp2.getZ())
                             return 1;
                         // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
-                        LOGGER.warn("Found two LaserPoints with same max Z value: {}, {}", lp1, lp2);
+//                        LOGGER.warn("Found two LaserPoints with same max Z value: {}, {}", lp1, lp2);
                         return 0;
                     });
                     
@@ -125,34 +137,70 @@ public class Kartantekia {
                         else if (lp1.getZ() > lp2.getZ())
                             return 1;
                         // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
-                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
+//                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
                         return 0;
                     });
                     
                     // lasketaan etäisyys sekä korkeusero
                     LaserPoint maxLP = maxPoint.get();
                     LaserPoint minLP = minPoint.get();
+                    
                     double heightDelta = maxLP.getZ() - minLP.getZ();
+                    
+                    if (heightDelta > 20.0) {
+                        // Ok, tämä pikseli on jyrkänne
+                        addRasterPointSync(bin, rasterPoints, new RasterPoint((char)1));
+                        return; // jatketaan muiden prosessointia
+                    }
+                    
                     double distance = Math.sqrt(Math.pow(maxLP.getX() - minLP.getX(), 2.0) + Math.pow(maxLP.getY() - minLP.getY(), 2.0) + Math.pow(maxLP.getZ() - minLP.getZ(), 2.0));
+                    
+                    // lasketaan kasvillisuuden tiheys
+                    Collection<LaserPoint> vegetationPoints = points.stream().filter(LaserPoint::isVegetation).collect(Collectors.toList());
+                    
+                    if (vegetationPoints.size() >= groundPoints.size()) {
+                        // Ok, kasvillisuus
+                        addRasterPointSync(bin, rasterPoints, new RasterPoint((char)2));
+                        return; // jatketaan muiden prosessointia
+                    }
                     
                     DoubleSummaryStatistics summary = points.stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
                     
-                    
-                    
                     summary.getAverage();
                 });
+                
+                futures.add(future);
             });
             
-//            asd.entrySet().forEach(entry -> {
-//                long bin = entry.getKey();
-//                DoubleSummaryStatistics summary = entry.getValue().stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
-//                summary.getAverage();
-////                LOGGER.info("bin=" + bin + ", avg=" + summary.getAverage());
-//            });
+            
+            // Lets wait for all bins to be processes
+            futures.forEach(future -> {
+                try {
+                    future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    LOGGER.error("Could not wait for completion", e);
+                }
+            });
+
+            
             
             binProcessor.shutdown();
             binProcessor.awaitTermination(5, TimeUnit.MINUTES);
             LOGGER.info((System.currentTimeMillis() - st) + "ms");
+        }
+    }
+    
+    /**
+     * Need to be synchronized as writes for fastutil maps may mess up iterators in multithreaded environment
+     * See: http://fastutil.di.unimi.it/docs/overview-summary.html
+     * 
+     * @param bin
+     * @param rPoints
+     * @param rp
+     */
+    private static void addRasterPointSync(long bin, Long2ObjectAVLTreeMap<RasterPoint> rPoints, RasterPoint rp) {
+        synchronized (rPoints) {
+            rPoints.put(bin, rp);
         }
     }
     

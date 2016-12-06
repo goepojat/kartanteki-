@@ -112,4 +112,16 @@ public class LaserPoint {
     public boolean isLowVegetation() {
         return pointClass == 3;
     }
+    
+    public boolean isMediumVegetation() {
+        return pointClass == 4;
+    }
+    
+    public boolean isHighVegetation() {
+        return pointClass == 5;
+    }
+    
+    public boolean isVegetation() {
+        return isLowVegetation() || isMediumVegetation() || isHighVegetation();
+    }
 }
