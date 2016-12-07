@@ -1,17 +1,17 @@
 package fi.goepojat;
 
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
-
 import java.util.Collection;
-import java.util.DoubleSummaryStatistics;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -26,8 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import fi.goepojat.tiff.LAS2TIFF;
-import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
-import it.unimi.dsi.fastutil.objects.ObjectAVLTreeSet;
+import fi.goepojat.util.ColorUtils;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
@@ -167,18 +166,53 @@ public class Kartantekia {
                         double distance = Math.sqrt(Math.pow(maxLP.getX() - minLP.getX(), 2.0) + Math.pow(maxLP.getY() - minLP.getY(), 2.0) + Math.pow(maxLP.getZ() - minLP.getZ(), 2.0));
                     }
                     
+                    
+                    Map<Character, List<LaserPoint>> groupedPoints = points.stream().collect(Collectors.groupingBy(LaserPoint::getClassification));
+                    
+                    Optional<Entry<Character, List<LaserPoint>>> dominant = groupedPoints.entrySet().stream().max(new Comparator<Map.Entry<Character, List<LaserPoint>>>() {
+
+                        @Override
+                        public int compare(Entry<Character, List<LaserPoint>> o1, Entry<Character, List<LaserPoint>> o2) {
+                            if (applyFactor(o1) > applyFactor(o2))
+                                return -1;
+                            if (applyFactor(o1) < applyFactor(o2))
+                                return 1;
+                            return 0;
+                        }
+                        
+                        private int applyFactor(Map.Entry<Character, List<LaserPoint>> first) {
+                            // Here a factor could be assigned per classification
+                            int amount = first.getValue().size();
+                            switch (first.getKey()) {
+                            default:
+                               amount = amount * 1;
+                            }
+                            return amount;
+                        }
+                    });
+                    
+                    Entry<Character, List<LaserPoint>> domin = dominant.get();
+                    addPixelToImage(pointStore.binflat2xy(bin), image, domin.getKey());
+                    
+                    
                     // lasketaan kasvillisuuden tiheys
-                    Collection<LaserPoint> vegetationPoints = points.stream().filter(LaserPoint::isVegetation).collect(Collectors.toList());
+//                    Collection<LaserPoint> vegetationPoints = points.stream().filter(LaserPoint::isVegetation).collect(Collectors.toList());
+//                    
+//                    Collection<LaserPoint> buildingPoints = points.stream().filter(LaserPoint::isBuilding).collect(Collectors.toList());
+//                    
+//                    Collection<LaserPoint> roadPoints = points.stream().filter(LaserPoint::isRoad).collect(Collectors.toList());
+//                    
+//                    
+//                    
+//                    if (vegetationPoints.size() >= groundPoints.size()) {
+//                        // Ok, kasvillisuus
+//                        addPixelToImage(pointStore.binflat2xy(bin), image, (char)2);
+//                        return; // jatketaan muiden prosessointia
+//                    }
                     
-                    if (vegetationPoints.size() >= groundPoints.size()) {
-                        // Ok, kasvillisuus
-                        addPixelToImage(pointStore.binflat2xy(bin), image, (char)2);
-                        return; // jatketaan muiden prosessointia
-                    }
-                    
-                    DoubleSummaryStatistics summary = points.stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
-                    
-                    summary.getAverage();
+//                    DoubleSummaryStatistics summary = points.stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
+//                    
+//                    summary.getAverage();
                 });
                 
                 futures.add(future);
@@ -216,13 +250,8 @@ public class Kartantekia {
         image.setRGB(xy[0], xy[1], rgb);
     }
     
-    private static int resolveFromClassification(char c) {
-        switch (c) {
-        case 2:
-            return 3721808;
-        default:
-            return 16777215;
-        }
+    private static int resolveFromClassification(char classification) {
+        return ColorUtils.getRGBIntOfClassification(classification);
     }
 
     public static void main(String[] args) throws InterruptedException {

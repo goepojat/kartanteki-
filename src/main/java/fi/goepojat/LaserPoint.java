@@ -124,4 +124,20 @@ public class LaserPoint {
     public boolean isVegetation() {
         return isLowVegetation() || isMediumVegetation() || isHighVegetation();
     }
+    
+    public boolean isBuilding() {
+        return pointClass == 6;
+    }
+    
+    public boolean isWater() {
+        return pointClass == 9;
+    }
+    
+    public boolean isRoad() {
+        return pointClass == 11;
+    }
+
+    public char getClassification() {
+        return pointClass;
+    }
 }
