@@ -1,5 +1,8 @@
 package fi.goepojat;
 
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -22,8 +25,10 @@ import org.lastools.LASlibJNI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import fi.goepojat.tiff.LAS2TIFF;
 import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
 import it.unimi.dsi.fastutil.objects.ObjectAVLTreeSet;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
 public class Kartantekia {
@@ -42,7 +47,8 @@ public class Kartantekia {
     }
     
     private final ExecutorService binProcessor;
-    private final Path lasFile; 
+    private final Path lasFile;
+    private LAS2TIFF las2Tiff; 
     
     public Kartantekia(Path lasFile, int concurrency) {
         if (!initialized)
@@ -51,6 +57,7 @@ public class Kartantekia {
             throw new IllegalArgumentException(lasFile.toAbsolutePath() + " does not exist!");
         this.lasFile = lasFile;
         this.binProcessor = Executors.newFixedThreadPool(concurrency);
+        this.las2Tiff = new LAS2TIFF();
     }
     
     public void process() throws InterruptedException {
@@ -105,62 +112,67 @@ public class Kartantekia {
             LOGGER.info(pointStore.getNumPoints() + " points");
             LOGGER.info(Arrays.toString(histogram));
             
-//            Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> asd = ;
+            ObjectArrayList<Future<?>> futures = new ObjectArrayList<>(); 
             
-            Long2ObjectAVLTreeMap<RasterPoint> rasterPoints = new Long2ObjectAVLTreeMap<>();
+            BufferedImage image = new BufferedImage(pointStore.getWidth(), pointStore.getHeight(), BufferedImage.TYPE_INT_ARGB);
             
-            ObjectAVLTreeSet<Future<?>> futures = new ObjectAVLTreeSet<>(); 
             
             pointStore.getBins().entrySet().forEach(entry -> {
-                Long bin = entry.getKey();
+                Integer bin = entry.getKey();
                 ObjectBigArrayBigList<LaserPoint> points = entry.getValue();
                 Future<?> future = binProcessor.submit(() -> {
                     
                     // Jyrkänteen laskenta jotenkin näin:
                     // filtteröidään maapisteet
                     Collection<LaserPoint> groundPoints = points.stream().filter(LaserPoint::isGround).collect(Collectors.toList());
-                    // ja haetaan maksimi
-                    Optional<LaserPoint> maxPoint = groundPoints.stream().max((lp1, lp2) -> {
-                        if (lp1.getZ() > lp2.getZ())
-                            return -1;
-                        else if (lp1.getZ() < lp2.getZ())
-                            return 1;
-                        // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
-//                        LOGGER.warn("Found two LaserPoints with same max Z value: {}, {}", lp1, lp2);
-                        return 0;
-                    });
                     
-                    // ja minimi
-                    Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
-                        if (lp1.getZ() < lp2.getZ())
-                            return -1;
-                        else if (lp1.getZ() > lp2.getZ())
-                            return 1;
-                        // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
-//                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
-                        return 0;
-                    });
+                    // voi olla vain yksi piste, silloin ei jyrkännettä
+                    if (groundPoints.size() > 1) {
                     
-                    // lasketaan etäisyys sekä korkeusero
-                    LaserPoint maxLP = maxPoint.get();
-                    LaserPoint minLP = minPoint.get();
-                    
-                    double heightDelta = maxLP.getZ() - minLP.getZ();
-                    
-                    if (heightDelta > 20.0) {
-                        // Ok, tämä pikseli on jyrkänne
-                        addRasterPointSync(bin, rasterPoints, new RasterPoint((char)1));
-                        return; // jatketaan muiden prosessointia
+                        // ja haetaan maksimi
+                        Optional<LaserPoint> maxPoint = groundPoints.stream().max((lp1, lp2) -> {
+                            if (lp1.getZ() > lp2.getZ())
+                                return -1;
+                            else if (lp1.getZ() < lp2.getZ())
+                                return 1;
+                            // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
+    //                        LOGGER.warn("Found two LaserPoints with same max Z value: {}, {}", lp1, lp2);
+                            return 0;
+                        });
+                        
+                        // ja minimi
+                        Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
+                            if (lp1.getZ() < lp2.getZ())
+                                return -1;
+                            else if (lp1.getZ() > lp2.getZ())
+                                return 1;
+                            // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
+    //                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
+                            return 0;
+                        });
+                        
+                        // lasketaan etäisyys sekä korkeusero
+                        LaserPoint maxLP = maxPoint.get();
+                        LaserPoint minLP = minPoint.get();
+                        
+                        double heightDelta = maxLP.getZ() - minLP.getZ();
+                        
+                        if (heightDelta > 20.0) {
+                            // Ok, tämä pikseli on jyrkänne
+                            addPixelToImage(pointStore.binflat2xy(bin), image, (char)1);
+                            return; // jatketaan muiden prosessointia
+                        }
+                        
+                        
+                        double distance = Math.sqrt(Math.pow(maxLP.getX() - minLP.getX(), 2.0) + Math.pow(maxLP.getY() - minLP.getY(), 2.0) + Math.pow(maxLP.getZ() - minLP.getZ(), 2.0));
                     }
-                    
-                    double distance = Math.sqrt(Math.pow(maxLP.getX() - minLP.getX(), 2.0) + Math.pow(maxLP.getY() - minLP.getY(), 2.0) + Math.pow(maxLP.getZ() - minLP.getZ(), 2.0));
                     
                     // lasketaan kasvillisuuden tiheys
                     Collection<LaserPoint> vegetationPoints = points.stream().filter(LaserPoint::isVegetation).collect(Collectors.toList());
                     
                     if (vegetationPoints.size() >= groundPoints.size()) {
                         // Ok, kasvillisuus
-                        addRasterPointSync(bin, rasterPoints, new RasterPoint((char)2));
+                        addPixelToImage(pointStore.binflat2xy(bin), image, (char)2);
                         return; // jatketaan muiden prosessointia
                     }
                     
@@ -181,29 +193,38 @@ public class Kartantekia {
                     LOGGER.error("Could not wait for completion", e);
                 }
             });
-
             
+            // Time to write tiff
+
+            try {
+                Path output = Paths.get("C:/Users/Jani Simomaa/Desktop/output.tiff");
+                Files.deleteIfExists(output);
+                Files.createFile(output);
+                las2Tiff.writeTIFF(output.toFile(), image);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
             
             binProcessor.shutdown();
             binProcessor.awaitTermination(5, TimeUnit.MINUTES);
             LOGGER.info((System.currentTimeMillis() - st) + "ms");
         }
     }
-    
-    /**
-     * Need to be synchronized as writes for fastutil maps may mess up iterators in multithreaded environment
-     * See: http://fastutil.di.unimi.it/docs/overview-summary.html
-     * 
-     * @param bin
-     * @param rPoints
-     * @param rp
-     */
-    private static void addRasterPointSync(long bin, Long2ObjectAVLTreeMap<RasterPoint> rPoints, RasterPoint rp) {
-        synchronized (rPoints) {
-            rPoints.put(bin, rp);
-        }
+
+    private static void addPixelToImage(int[] xy, BufferedImage image, char c) {
+        int rgb = resolveFromClassification(c);
+        image.setRGB(xy[0], xy[1], rgb);
     }
     
+    private static int resolveFromClassification(char c) {
+        switch (c) {
+        case 2:
+            return 3721808;
+        default:
+            return 16777215;
+        }
+    }
+
     public static void main(String[] args) throws InterruptedException {
         if (args.length != 1)
             throw new IllegalArgumentException("arg should be path to las file");

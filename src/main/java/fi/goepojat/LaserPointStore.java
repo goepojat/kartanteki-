@@ -3,17 +3,17 @@ package fi.goepojat;
 import java.util.Arrays;
 import java.util.HashSet;
 
-import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectAVLTreeMap;
 import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
 public class LaserPointStore {
 	// ObjectBigArrayBigList<LaserPoint> points = new ObjectBigArrayBigList<>();
 
-	private Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> bins;
+	private Int2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> bins;
 	private double[] bbox;
 	private float binsize;
-	private long ncols;
-	private long nrows;
+	private int ncols;
+	private int nrows;
 	private float binbuffer;
 	private float bintotalsize;
 
@@ -35,44 +35,61 @@ public class LaserPointStore {
 		System.out.println("sizex: " + sizex);
 		System.out.println("sizey: " + sizey);
 
-		ncols = (long) Math.ceil(sizex / binsize);
-		nrows = (long) Math.ceil(sizey / binsize);
+		ncols = (int) Math.ceil(sizex / binsize);
+		nrows = (int) Math.ceil(sizey / binsize);
 
 		System.out.println("ncols: " + ncols);
 		System.out.println("nrows: " + nrows);
 
-		long nbins = ncols * nrows;
+		int nbins = ncols * nrows;
 
 		System.out.println("nbins: " + nbins);
 
-		bins = new Long2ObjectAVLTreeMap<>();
+		bins = new Int2ObjectAVLTreeMap<>();
 
 	}
+	
+	public int getWidth() {
+	    return ncols;
+	}
+	
+	public int getHeight() {
+	    return nrows;
+	}
 
-	private long binxy2flat(long binx, long biny) {
+	private int binxy2flat(int binx, int biny) {
 		return biny * ncols + binx;
 	}
 
-	private long[] binflat2xy(long flatbin) {
-		return new long[] { flatbin % ncols, (long) Math.floor(flatbin / nrows) };
+	public int[] binflat2xy(int flatbin) {
+	    int x = flatbin % ncols;
+	    if (x == 1500)
+	        System.out.println("here");
+	    double y = Math.floor(flatbin / nrows);
+	    if ((int)y == 1500)
+	        System.out.println("here");
+		return new int[] { x, (int) y  };
 	}
 
-	private long getBinForDeltas(double dx, double dy, int bindx, int bindy) {
-		float dxtrans = bindx * binbuffer;
-		float dytrans = bindy * binbuffer;
+    private int getBinForDeltas(double dx, double dy, int bindx, int bindy) {
+        float dxtrans = bindx * binbuffer;
+        float dytrans = bindy * binbuffer;
 
-		long binx = Math.max(0, (int) Math.floor((dx + dxtrans) / binsize));
-		long biny = Math.max(0, (int) Math.floor((dy + dytrans) / binsize));
+        int binx = Math.min(ncols - 1, Math.max(0, (int) Math.floor((dx + dxtrans) / binsize)));
+        int biny = Math.min(nrows - 1, Math.max(0, (int) Math.floor((dy + dytrans) / binsize)));
 
-		return binxy2flat(binx, biny);
+        int bin = binxy2flat(binx, biny);
+		return bin;
 
 	}
 
-	private HashSet<Long> calcBinsForPoint(LaserPoint lp) {
+	private HashSet<Integer> calcBinsForPoint(LaserPoint lp) {
 		double dx = lp.getX() - bbox[0];
 		double dy = lp.getY() - bbox[1];
 		
-		HashSet<Long> binset= new HashSet<Long>(Arrays.asList(getBinForDeltas(dx, dy, -1, -1), getBinForDeltas(dx, dy, -1, 0),
+		
+		
+		HashSet<Integer> binset= new HashSet<>(Arrays.asList(getBinForDeltas(dx, dy, -1, -1), getBinForDeltas(dx, dy, -1, 0),
 				getBinForDeltas(dx, dy, -1, 1), getBinForDeltas(dx, dy, 0, -1), getBinForDeltas(dx, dy, 0, 0),
 				getBinForDeltas(dx, dy, 0, 1), getBinForDeltas(dx, dy, 1, -1), getBinForDeltas(dx, dy, 1, 0),
 				getBinForDeltas(dx, dy, 1, 1)));
@@ -83,16 +100,14 @@ public class LaserPointStore {
 	}
 
 	public void addPoint(LaserPoint lp) {
-		HashSet<Long> point_bins = calcBinsForPoint(lp);
-		
-		
-		for (long bin : point_bins) {
-			if (!bins.containsKey(bin)) {
-				bins.put(bin, new ObjectBigArrayBigList<LaserPoint>());
-			}
-			bins.get(bin).add(lp);
-		}
-
+	    calcBinsForPoint(lp).forEach(bin -> {
+	        bins.compute(bin, (t, list) -> {
+                if (list == null)
+                    list = new ObjectBigArrayBigList<>();
+                list.add(lp);
+                return list;
+            });
+        });
 	}
 
 	public long getNumPoints() {
@@ -108,7 +123,7 @@ public class LaserPointStore {
 		return bins.size();
 	}
 	
-    public Long2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> getBins() {
+    public Int2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> getBins() {
         return bins;
     }
 }
