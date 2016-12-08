@@ -1,9 +1,11 @@
 package fi.goepojat;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.Shape;
 import java.awt.image.BufferedImage;
 import java.awt.image.ColorModel;
 import java.awt.image.WritableRaster;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,7 +13,6 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.DoubleSummaryStatistics;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -25,17 +26,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
-
 import org.lastools.LASPoint;
 import org.lastools.LASReader;
 import org.lastools.LASlibJNI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.vividsolutions.jts.awt.ShapeWriter;
+import com.vividsolutions.jts.geom.Coordinate;
+import com.vividsolutions.jts.geom.Geometry;
+import com.vividsolutions.jts.geom.GeometryFactory;
+import com.vividsolutions.jts.triangulate.DelaunayTriangulationBuilder;
+import com.vividsolutions.jts.triangulate.IncrementalDelaunayTriangulator;
+import com.vividsolutions.jts.triangulate.quadedge.QuadEdgeSubdivision;
 
 import fi.goepojat.contour.ContourTest;
 import fi.goepojat.tiff.LAS2TIFF;
@@ -145,8 +148,8 @@ public class Kartantekia {
             
             BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
             
-            ColorModel cm = ColorModel.getRGBdefault();
-            WritableRaster contourRaster = cm.createCompatibleWritableRaster(w, h);
+            
+            ObjectBigArrayBigList<Coordinate> vertices = new ObjectBigArrayBigList<>();
             
             
             AtomicInteger maxVegeDensity = new AtomicInteger(0);
@@ -165,14 +168,16 @@ public class Kartantekia {
                     DoubleSummaryStatistics stats = groundPoints.stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
                     
                     int[] xy = pointStore.binflat2xy(bin);
-                    int value = -1;
-                    if (stats.getCount() > 0)
-                        value = (int) Math.floor(stats.getAverage());
+                    
+                    Coordinate vert = new Coordinate(xy[0], xy[1], stats.getAverage());
+                    synchronized(vertices) {
+                       vertices.add(vert); 
+                    }
                     
                     // synkronointi koska monesta säikeestä arvon asetus
-                    synchronized (contourRaster) {
-                        contourRaster.setPixel(xy[0], xy[1], new int[] { value, 0, 0, 0 });
-                    }
+//                    synchronized (contourRaster) {
+//                        contourRaster.setPixel(xy[0], xy[1], new int[] { value, 0, 0, 0 });
+//                    }
                     
                     // Minimi tarvitaan yleensä aina metsän määrittelyyn:
                     Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
@@ -379,20 +384,41 @@ public class Kartantekia {
             // color space (3 for RGB) + 1 extra band if the color model contains alpha 
 //            ColorSpace colorSpace = ColorSpace.getInstance(ColorSpace.CS_sRGB);
             
-            BufferedImage contourImage = new BufferedImage(cm, contourRaster, cm.isAlphaPremultiplied(), null);
-            Collection<Integer> levels = Arrays.asList(0, 1, 2, 3, 4);
-            BufferedImage contours = ContourTest.createContour(contourImage, levels);
+            DelaunayTriangulationBuilder builder = new DelaunayTriangulationBuilder();
+            builder.setTolerance(5.0);
+            builder.setSites(vertices);
+            QuadEdgeSubdivision subd = builder.getSubdivision();
+            
+            
+            Geometry geom = subd.getEdges(new GeometryFactory());
+            
+            ShapeWriter sw = new ShapeWriter();
+            Shape shape = sw.toShape(geom);
+
+            BufferedImage imagee = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+            Graphics2D graphics = imagee.createGraphics();
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, image.getWidth(), imagee.getHeight());
+            graphics.setColor(Color.BLACK);
+            graphics.draw(shape);
+            
+//            ColorModel cm = ColorModel.getRGBdefault();
+//            WritableRaster contourRaster = cm.createCompatibleWritableRaster(w, h);
+//            
+//            BufferedImage contourImage = new BufferedImage(cm, contourRaster, cm.isAlphaPremultiplied(), null);
+//            Collection<Integer> levels = Arrays.asList(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 25);
+//            BufferedImage contours = ContourTest.createContour(contourImage, levels);
             
             try {
                 Files.deleteIfExists(output);
                 Files.createFile(output);
                 las2Tiff.writeTIFF(output.toFile(), image);
                 
-                Path contOutput = output.getParent().resolve(output.getFileName().toString() + "_cont.png");
+                Path contOutput = output.getParent().resolve(output.getFileName().toString() + "_cont.tiff");
                 
                 Files.deleteIfExists(contOutput);
                 Files.createFile(contOutput);
-                writePNG(contOutput.toFile(), contours);
+                las2Tiff.writeTIFF(contOutput.toFile(), imagee);
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -413,41 +439,5 @@ public class Kartantekia {
         if (args.length != 2)
             throw new IllegalArgumentException("args should be path to las file and tiff output path");
         new Kartantekia(Paths.get(args[0]), Paths.get(args[1]), Runtime.getRuntime().availableProcessors()).process();
-    }
-    
-    public void writePNG(File file, BufferedImage image) throws IOException {
-        // Get the writer
-        String format = "png";
-        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(format);
-
-        if (!writers.hasNext()) {
-            throw new IllegalArgumentException("No writer for: " + format);
-        }
-        ImageWriter writer = writers.next();
-
-        try {
-            // Create output stream
-            ImageOutputStream output = ImageIO.createImageOutputStream(file);
-
-            try {
-                writer.setOutput(output);
-
-                // Optionally, listen to progress, warnings, etc.
-
-                ImageWriteParam param = writer.getDefaultWriteParam();
-
-                // Optionally, control format specific settings of param (requires casting), or
-                // control generic write settings like sub sampling, source region, output type etc.
-
-                // Optionally, provide thumbnails and image/stream metadata
-                writer.write(null, new IIOImage(image, null, null), param);
-            } finally {
-                // Close stream in finally block to avoid resource leaks
-                output.close();
-            }
-        } finally {
-            // Dispose writer in finally block to avoid memory leaks
-            writer.dispose();
-        }
     }
 }
