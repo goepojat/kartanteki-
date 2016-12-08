@@ -26,7 +26,10 @@ package fi.goepojat.util;
  *   19-63                   Reserved
  *   64-255                  User definable
  */
-public class Classification {
+public final class LASClassification {
+    
+    private LASClassification() {
+    }
     
     public static final char CREATED = 0;
     public static final char UNCLASSIFIED = 1;

@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -17,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import org.lastools.LASPoint;
@@ -27,6 +27,8 @@ import org.slf4j.LoggerFactory;
 
 import fi.goepojat.tiff.LAS2TIFF;
 import fi.goepojat.util.ColorUtils;
+import fi.goepojat.util.LASClassification;
+import fi.goepojat.util.OClassification;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectBigArrayBigList;
 
@@ -47,14 +49,16 @@ public class Kartantekia {
     
     private final ExecutorService binProcessor;
     private final Path lasFile;
-    private LAS2TIFF las2Tiff; 
+    private final LAS2TIFF las2Tiff;
+    private final Path output; 
     
-    public Kartantekia(Path lasFile, int concurrency) {
+    public Kartantekia(Path lasFile, Path output, int concurrency) {
         if (!initialized)
             throw new IllegalStateException("LASlibJNI not initialized!");
         if (!Files.exists(lasFile))
             throw new IllegalArgumentException(lasFile.toAbsolutePath() + " does not exist!");
         this.lasFile = lasFile;
+        this.output = output;
         this.binProcessor = Executors.newFixedThreadPool(concurrency);
         this.las2Tiff = new LAS2TIFF();
     }
@@ -82,8 +86,8 @@ public class Kartantekia {
 
             while (reader.readPoint()) {
                 LASPoint point = reader.getPoint();
-                if (point.isWithheld())
-                    continue;
+//                if (point.isWithheld())
+//                    continue;
                 LaserPoint lp = new LaserPoint(point.getX(), point.getY(), (float) point.getZ(),
                         point.getClassification(), point.isFirst(), point.isIntermediate(), point.isLast(),
                         point.isSingle(), point.isFirstOfMany(), point.isLastOfMany());
@@ -115,6 +119,8 @@ public class Kartantekia {
             
             BufferedImage image = new BufferedImage(pointStore.getWidth(), pointStore.getHeight(), BufferedImage.TYPE_INT_ARGB);
             
+            AtomicInteger maxVegeDensity = new AtomicInteger(0);
+            AtomicInteger minVegeDensity = new AtomicInteger(0);
             
             pointStore.getBins().entrySet().forEach(entry -> {
                 Integer bin = entry.getKey();
@@ -124,6 +130,17 @@ public class Kartantekia {
                     // Jyrkänteen laskenta jotenkin näin:
                     // filtteröidään maapisteet
                     Collection<LaserPoint> groundPoints = points.stream().filter(LaserPoint::isGround).collect(Collectors.toList());
+                    
+                    // Minimi tarvitaan yleensä aina metsän määrittelyyn:
+                    Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
+                        if (lp1.getZ() < lp2.getZ())
+                            return -1;
+                        else if (lp1.getZ() > lp2.getZ())
+                            return 1;
+                        // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
+//                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
+                        return 0;
+                    });
                     
                     // voi olla vain yksi piste, silloin ei jyrkännettä
                     if (groundPoints.size() > 1) {
@@ -139,17 +156,6 @@ public class Kartantekia {
                             return 0;
                         });
                         
-                        // ja minimi
-                        Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
-                            if (lp1.getZ() < lp2.getZ())
-                                return -1;
-                            else if (lp1.getZ() > lp2.getZ())
-                                return 1;
-                            // Ok, löytyi kaksi samaa Z arvolla, kuinkas tässä edetään
-    //                        LOGGER.warn("Found two LaserPoints with same min Z value: {}, {}", lp1, lp2);
-                            return 0;
-                        });
-                        
                         // lasketaan etäisyys sekä korkeusero
                         LaserPoint maxLP = maxPoint.get();
                         LaserPoint minLP = minPoint.get();
@@ -158,42 +164,124 @@ public class Kartantekia {
                         
                         if (heightDelta > 20.0) {
                             // Ok, tämä pikseli on jyrkänne
-                            addPixelToImage(pointStore.binflat2xy(bin), image, (char)1);
+                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.CLIFF);
                             return; // jatketaan muiden prosessointia
                         }
                         
-                        
                         double distance = Math.sqrt(Math.pow(maxLP.getX() - minLP.getX(), 2.0) + Math.pow(maxLP.getY() - minLP.getY(), 2.0) + Math.pow(maxLP.getZ() - minLP.getZ(), 2.0));
                     }
-                    
+                    long amountOfPoints = points.size64();
                     
                     Map<Character, List<LaserPoint>> groupedPoints = points.stream().collect(Collectors.groupingBy(LaserPoint::getClassification));
                     
-                    Optional<Entry<Character, List<LaserPoint>>> dominant = groupedPoints.entrySet().stream().max(new Comparator<Map.Entry<Character, List<LaserPoint>>>() {
-
-                        @Override
-                        public int compare(Entry<Character, List<LaserPoint>> o1, Entry<Character, List<LaserPoint>> o2) {
-                            if (applyFactor(o1) > applyFactor(o2))
-                                return -1;
-                            if (applyFactor(o1) < applyFactor(o2))
-                                return 1;
-                            return 0;
-                        }
+                    Optional<Entry<Character, List<LaserPoint>>> dominant = groupedPoints.entrySet().stream().max((entry1, entry2) -> {
+                        char entry1Classification = entry1.getKey();
+                        char entry2Classification = entry2.getKey();
+                        List<LaserPoint> entry1Points = entry1.getValue();
+                        List<LaserPoint> entry2Points = entry2.getValue();
                         
-                        private int applyFactor(Map.Entry<Character, List<LaserPoint>> first) {
-                            // Here a factor could be assigned per classification
-                            int amount = first.getValue().size();
-                            switch (first.getKey()) {
-                            default:
-                               amount = amount * 1;
+                        // tulkitaan maapisteeksi jos maapisteitä 80% kokonaismäärästä
+                        if (entry1Classification == LASClassification.GROUND) {
+                            int totalSize1 = entry1Points.size() + entry2Points.size();
+                            if (entry1Points.size() / totalSize1 > 0.8) {
+                                return -1;
+                            } else {
+                                return 1;
                             }
-                            return amount;
                         }
+                        if (entry2Classification == LASClassification.GROUND) {
+                            int totalSize2 = entry1Points.size() + entry2Points.size();
+                            if (entry2Points.size() / totalSize2 > 0.8) {
+                                return 1;
+                            } else {
+                                return -1;
+                            }
+                        }
+                        if (entry1Points.size() > entry2Points.size())
+                            return -1;
+                        if (entry1Points.size() < entry2Points.size())
+                            return 1;
+                        return 0;
                     });
                     
                     Entry<Character, List<LaserPoint>> domin = dominant.get();
-                    addPixelToImage(pointStore.binflat2xy(bin), image, domin.getKey());
                     
+                    char classification = domin.getKey();
+                    
+                    switch (classification) {
+                    case LASClassification.WATER:
+                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.WATER);
+                        break;
+                    case LASClassification.GROUND:
+                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.GROUND);
+                        break;
+                    case LASClassification.BUILDING:
+                    case LASClassification.ROAD_SURGFACE:
+                    case LASClassification.RAIL:
+                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.MANMADE);
+                    case LASClassification.LOW_VEGETATION:
+                    case LASClassification.MEDIUM_VEGETATION:
+                    case LASClassification.HIGH_VEGETATAION:
+                        // Ok, kasvillisuutta, täytyy luokitella tiheyden mukaan taikka metsää
+                        
+                        List<LaserPoint> vegetationPoints = domin.getValue();
+                        
+                        // Katsotaan ekaksi onko metsää, metsää jos alimman maapisteen korkeus ylimpään vegepisteeseen esim. 8metriä
+                        if (minPoint.isPresent()) {
+                            LaserPoint lowestGroundPoint = minPoint.get();
+                            LaserPoint maxVegetationPoint;
+                            if (vegetationPoints.size() > 1) {
+                                Optional<LaserPoint> opMaxVegetation = vegetationPoints.stream().max((lp1, lp2) -> {
+                                    if (lp1.getZ() > lp2.getZ())
+                                        return -1;
+                                    if (lp1.getZ() < lp2.getZ())
+                                        return 1;
+                                    return 0;
+                                });
+                                maxVegetationPoint = opMaxVegetation.get();
+                            } else {
+                                maxVegetationPoint = vegetationPoints.iterator().next();
+                            }
+                            
+                            if (maxVegetationPoint.getZ() - lowestGroundPoint.getZ() > 8) {
+                                addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.FOREST);
+                                return;
+                            }
+
+                            
+                        } else {
+                            // hmm, hankalampi homma, pisteet vegeä mutta ei maapistettä
+                            // TODO:
+                        }
+                        
+                        float vegetationDensity = vegetationPoints.size() / amountOfPoints;
+                        
+                        int dens = Float.floatToIntBits(vegetationDensity);
+                        if (dens > maxVegeDensity.get())
+                            maxVegeDensity.set(dens);
+                        if (dens < minVegeDensity.get())
+                            minVegeDensity.set(dens);
+                        
+                        if (0.0 <= vegetationDensity && vegetationDensity < 0.25) {
+                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_1);
+                            return;
+                        }
+                        if (0.25 <= vegetationDensity && vegetationDensity < 0.5) {
+                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_2);
+                            return;
+                        }
+                        if (0.5 <= vegetationDensity && vegetationDensity < 0.75) {
+                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_3);
+                            return;
+                        }
+                        if (0.75 <= vegetationDensity && vegetationDensity <= 1.0) {
+                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_4);
+                            return;
+                        }
+                        
+                    default:
+                        break;
+                    }
                     
                     // lasketaan kasvillisuuden tiheys
 //                    Collection<LaserPoint> vegetationPoints = points.stream().filter(LaserPoint::isVegetation).collect(Collectors.toList());
@@ -229,9 +317,11 @@ public class Kartantekia {
             });
             
             // Time to write tiff
+            
+            LOGGER.info("minVegeDensity " + Float.intBitsToFloat(minVegeDensity.get()));
+            LOGGER.info("maxVegeDensity " + Float.intBitsToFloat(maxVegeDensity.get()));
 
             try {
-                Path output = Paths.get("C:/Users/Jani Simomaa/Desktop/output.tiff");
                 Files.deleteIfExists(output);
                 Files.createFile(output);
                 las2Tiff.writeTIFF(output.toFile(), image);
@@ -255,8 +345,8 @@ public class Kartantekia {
     }
 
     public static void main(String[] args) throws InterruptedException {
-        if (args.length != 1)
-            throw new IllegalArgumentException("arg should be path to las file");
-        new Kartantekia(Paths.get(args[0]), Runtime.getRuntime().availableProcessors()).process();
+        if (args.length != 2)
+            throw new IllegalArgumentException("args should be path to las file and tiff output path");
+        new Kartantekia(Paths.get(args[0]), Paths.get(args[1]), Runtime.getRuntime().availableProcessors()).process();
     }
 }

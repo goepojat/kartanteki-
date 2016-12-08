@@ -61,15 +61,11 @@ public class LaserPointStore {
 		return biny * ncols + binx;
 	}
 
-	public int[] binflat2xy(int flatbin) {
-	    int x = flatbin % ncols;
-	    if (x == 1500)
-	        System.out.println("here");
-	    double y = Math.floor(flatbin / nrows);
-	    if ((int)y == 1500)
-	        System.out.println("here");
-		return new int[] { x, (int) y  };
-	}
+    public int[] binflat2xy(int flatbin) {
+        int x = flatbin % ncols;
+        double y = (nrows - 1) - Math.floor(flatbin / nrows);
+        return new int[] { x, (int) y };
+    }
 
     private int getBinForDeltas(double dx, double dy, int bindx, int bindy) {
         float dxtrans = bindx * binbuffer;
@@ -79,9 +75,8 @@ public class LaserPointStore {
         int biny = Math.min(nrows - 1, Math.max(0, (int) Math.floor((dy + dytrans) / binsize)));
 
         int bin = binxy2flat(binx, biny);
-		return bin;
-
-	}
+        return bin;
+    }
 
 	private HashSet<Integer> calcBinsForPoint(LaserPoint lp) {
 		double dx = lp.getX() - bbox[0];
