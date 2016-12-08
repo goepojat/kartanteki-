@@ -1,12 +1,17 @@
 package fi.goepojat;
 
 import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.awt.image.WritableRaster;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.DoubleSummaryStatistics;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -15,9 +20,16 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 
 import org.lastools.LASPoint;
 import org.lastools.LASReader;
@@ -25,6 +37,7 @@ import org.lastools.LASlibJNI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import fi.goepojat.contour.ContourTest;
 import fi.goepojat.tiff.LAS2TIFF;
 import fi.goepojat.util.ColorUtils;
 import fi.goepojat.util.LASClassification;
@@ -59,7 +72,15 @@ public class Kartantekia {
             throw new IllegalArgumentException(lasFile.toAbsolutePath() + " does not exist!");
         this.lasFile = lasFile;
         this.output = output;
-        this.binProcessor = Executors.newFixedThreadPool(concurrency);
+        this.binProcessor = Executors.newFixedThreadPool(concurrency, new ThreadFactory() {
+            
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r);
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
         this.las2Tiff = new LAS2TIFF();
     }
     
@@ -117,7 +138,16 @@ public class Kartantekia {
             
             ObjectArrayList<Future<?>> futures = new ObjectArrayList<>(); 
             
-            BufferedImage image = new BufferedImage(pointStore.getWidth(), pointStore.getHeight(), BufferedImage.TYPE_INT_ARGB);
+            int w = pointStore.getWidth();
+            int h = pointStore.getHeight();
+            int bands = 3;
+            int[] bandOffsets = { 0, 1, 2 };
+            
+            BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+            
+            ColorModel cm = ColorModel.getRGBdefault();
+            WritableRaster contourRaster = cm.createCompatibleWritableRaster(w, h);
+            
             
             AtomicInteger maxVegeDensity = new AtomicInteger(0);
             AtomicInteger minVegeDensity = new AtomicInteger(0);
@@ -130,6 +160,19 @@ public class Kartantekia {
                     // Jyrkänteen laskenta jotenkin näin:
                     // filtteröidään maapisteet
                     Collection<LaserPoint> groundPoints = points.stream().filter(LaserPoint::isGround).collect(Collectors.toList());
+                    
+                    // Lasketaan maapisteiden korkeuden keskiarvo contoureja varten
+                    DoubleSummaryStatistics stats = groundPoints.stream().collect(Collectors.summarizingDouble(LaserPoint::getZ));
+                    
+                    int[] xy = pointStore.binflat2xy(bin);
+                    int value = -1;
+                    if (stats.getCount() > 0)
+                        value = (int) Math.floor(stats.getAverage());
+                    
+                    // synkronointi koska monesta säikeestä arvon asetus
+                    synchronized (contourRaster) {
+                        contourRaster.setPixel(xy[0], xy[1], new int[] { value, 0, 0, 0 });
+                    }
                     
                     // Minimi tarvitaan yleensä aina metsän määrittelyyn:
                     Optional<LaserPoint> minPoint = groundPoints.stream().min((lp1, lp2) -> {
@@ -164,7 +207,7 @@ public class Kartantekia {
                         
                         if (heightDelta > 20.0) {
                             // Ok, tämä pikseli on jyrkänne
-                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.CLIFF);
+                            addPixelToImage(xy, image, OClassification.CLIFF);
                             return; // jatketaan muiden prosessointia
                         }
                         
@@ -210,15 +253,15 @@ public class Kartantekia {
                     
                     switch (classification) {
                     case LASClassification.WATER:
-                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.WATER);
+                        addPixelToImage(xy, image, OClassification.WATER);
                         break;
                     case LASClassification.GROUND:
-                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.GROUND);
+                        addPixelToImage(xy, image, OClassification.GROUND);
                         break;
                     case LASClassification.BUILDING:
                     case LASClassification.ROAD_SURGFACE:
                     case LASClassification.RAIL:
-                        addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.MANMADE);
+                        addPixelToImage(xy, image, OClassification.MANMADE);
                     case LASClassification.LOW_VEGETATION:
                     case LASClassification.MEDIUM_VEGETATION:
                     case LASClassification.HIGH_VEGETATAION:
@@ -244,7 +287,7 @@ public class Kartantekia {
                             }
                             
                             if (maxVegetationPoint.getZ() - lowestGroundPoint.getZ() > 8) {
-                                addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.FOREST);
+                                addPixelToImage(xy, image, OClassification.FOREST);
                                 return;
                             }
 
@@ -263,19 +306,19 @@ public class Kartantekia {
                             minVegeDensity.set(dens);
                         
                         if (0.0 <= vegetationDensity && vegetationDensity < 0.25) {
-                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_1);
+                            addPixelToImage(xy, image, OClassification.VEGETATION_1);
                             return;
                         }
                         if (0.25 <= vegetationDensity && vegetationDensity < 0.5) {
-                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_2);
+                            addPixelToImage(xy, image, OClassification.VEGETATION_2);
                             return;
                         }
                         if (0.5 <= vegetationDensity && vegetationDensity < 0.75) {
-                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_3);
+                            addPixelToImage(xy, image, OClassification.VEGETATION_3);
                             return;
                         }
                         if (0.75 <= vegetationDensity && vegetationDensity <= 1.0) {
-                            addPixelToImage(pointStore.binflat2xy(bin), image, OClassification.VEGETATION_4);
+                            addPixelToImage(xy, image, OClassification.VEGETATION_4);
                             return;
                         }
                         
@@ -321,16 +364,38 @@ public class Kartantekia {
             LOGGER.info("minVegeDensity " + Float.intBitsToFloat(minVegeDensity.get()));
             LOGGER.info("maxVegeDensity " + Float.intBitsToFloat(maxVegeDensity.get()));
 
+            // Time to free some memory now
+            System.gc();
+            binProcessor.shutdown();
+            binProcessor.awaitTermination(5, TimeUnit.MINUTES);
+            pointStore.clear();
+            futures.clear();
+            System.gc();
+            System.gc();
+            
+            // piirretään contourit
+            // Create a color model compatible with this sample model/raster (TYPE_FLOAT)
+            // Note that the number of bands must equal the number of color components in the 
+            // color space (3 for RGB) + 1 extra band if the color model contains alpha 
+//            ColorSpace colorSpace = ColorSpace.getInstance(ColorSpace.CS_sRGB);
+            
+            BufferedImage contourImage = new BufferedImage(cm, contourRaster, cm.isAlphaPremultiplied(), null);
+            Collection<Integer> levels = Arrays.asList(0, 1, 2, 3, 4);
+            BufferedImage contours = ContourTest.createContour(contourImage, levels);
+            
             try {
                 Files.deleteIfExists(output);
                 Files.createFile(output);
                 las2Tiff.writeTIFF(output.toFile(), image);
+                
+                Path contOutput = output.getParent().resolve(output.getFileName().toString() + "_cont.png");
+                
+                Files.deleteIfExists(contOutput);
+                Files.createFile(contOutput);
+                writePNG(contOutput.toFile(), contours);
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            
-            binProcessor.shutdown();
-            binProcessor.awaitTermination(5, TimeUnit.MINUTES);
             LOGGER.info((System.currentTimeMillis() - st) + "ms");
         }
     }
@@ -348,5 +413,41 @@ public class Kartantekia {
         if (args.length != 2)
             throw new IllegalArgumentException("args should be path to las file and tiff output path");
         new Kartantekia(Paths.get(args[0]), Paths.get(args[1]), Runtime.getRuntime().availableProcessors()).process();
+    }
+    
+    public void writePNG(File file, BufferedImage image) throws IOException {
+        // Get the writer
+        String format = "png";
+        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(format);
+
+        if (!writers.hasNext()) {
+            throw new IllegalArgumentException("No writer for: " + format);
+        }
+        ImageWriter writer = writers.next();
+
+        try {
+            // Create output stream
+            ImageOutputStream output = ImageIO.createImageOutputStream(file);
+
+            try {
+                writer.setOutput(output);
+
+                // Optionally, listen to progress, warnings, etc.
+
+                ImageWriteParam param = writer.getDefaultWriteParam();
+
+                // Optionally, control format specific settings of param (requires casting), or
+                // control generic write settings like sub sampling, source region, output type etc.
+
+                // Optionally, provide thumbnails and image/stream metadata
+                writer.write(null, new IIOImage(image, null, null), param);
+            } finally {
+                // Close stream in finally block to avoid resource leaks
+                output.close();
+            }
+        } finally {
+            // Dispose writer in finally block to avoid memory leaks
+            writer.dispose();
+        }
     }
 }

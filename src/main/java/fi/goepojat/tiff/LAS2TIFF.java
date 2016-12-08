@@ -13,22 +13,18 @@ import javax.imageio.stream.ImageOutputStream;
 
 public class LAS2TIFF {
 
-    private ImageWriter writer;
-
     public LAS2TIFF() {
+    }
+    
+    public void writeTIFF(File file, BufferedImage image) throws IOException {
+        // Get the writer
         String format = "tiff";
         Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(format);
 
         if (!writers.hasNext()) {
             throw new IllegalArgumentException("No writer for: " + format);
         }
-        writer = writers.next();
-
-    }
-    
-    public void writeTIFF(File file, BufferedImage image) throws IOException {
-        // Get the writer
-        
+        ImageWriter writer = writers.next();
 
         try {
             // Create output stream

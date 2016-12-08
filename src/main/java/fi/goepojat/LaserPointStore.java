@@ -121,4 +121,12 @@ public class LaserPointStore {
     public Int2ObjectAVLTreeMap<ObjectBigArrayBigList<LaserPoint>> getBins() {
         return bins;
     }
+
+    /**
+     * Should be called for freeing memory
+     */
+    public void clear() {
+        bins.clear();
+        bins = null;
+    }
 }

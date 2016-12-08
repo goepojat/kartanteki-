@@ -14,8 +14,15 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <lwjgl.version>3.1.0</lwjgl.version>
     </properties>
+
+    <repositories>
+        <repository>
+            <id>geotoolkit</id>
+            <name>Geotoolkit.org project</name>
+            <url>http://maven.geotoolkit.org</url>
+        </repository>
+    </repositories>
 
     <dependencies>
         <dependency>
@@ -41,11 +48,30 @@
             <artifactId>fastutil</artifactId>
             <version>7.0.13</version>
         </dependency>
-        
+
         <dependency>
             <groupId>com.twelvemonkeys.imageio</groupId>
             <artifactId>imageio-tiff</artifactId>
             <version>3.3</version> <!-- Alternatively, build your own version -->
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/javax.media/jai_core -->
+        <dependency>
+            <groupId>javax.media</groupId>
+            <artifactId>jai_core</artifactId>
+            <version>1.1.3</version>
+        </dependency>
+<!-- https://mvnrepository.com/artifact/javax.media/jai_codec -->
+<dependency>
+    <groupId>javax.media</groupId>
+    <artifactId>jai_codec</artifactId>
+    <version>1.1.3</version>
+</dependency>
+
+        <!-- https://mvnrepository.com/artifact/org.jaitools/jt-contour -->
+        <dependency>
+            <groupId>org.jaitools</groupId>
+            <artifactId>jt-contour</artifactId>
+            <version>1.4.0</version>
         </dependency>
     </dependencies>
 </project>
